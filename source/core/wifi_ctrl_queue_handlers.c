@@ -109,6 +109,156 @@ int convert_sec_mode_enable_int_str(int sec_mode_enable, char *secModeStr) {
     return RETURN_OK;
 }
 
+static char *get_subdoc_name_from_json(const char *json)
+{
+    char *name = NULL;
+    cJSON *root = cJSON_Parse(json);
+    if (root == NULL) {
+        return NULL;
+    }
+
+    cJSON *subdoc = cJSON_GetObjectItemCaseSensitive(root, "SubDocName");
+    if (cJSON_IsString(subdoc) && (subdoc->valuestring != NULL)) {
+        name = strdup(subdoc->valuestring);
+    }
+
+    cJSON_Delete(root);
+    return name;
+}
+
+static char *get_default_subdoc_name_for_type(webconfig_subdoc_type_t type)
+{
+    switch (type) {
+    case webconfig_subdoc_type_private:
+        return strdup("private");
+    case webconfig_subdoc_type_home:
+        return strdup("home");
+    case webconfig_subdoc_type_xfinity:
+        return strdup("xfinity");
+    case webconfig_subdoc_type_mesh_backhaul:
+        return strdup("mesh backhaul");
+    case webconfig_subdoc_type_lnf:
+        return strdup("lnf");
+    case webconfig_subdoc_type_mesh_sta:
+        return strdup("mesh sta");
+    case webconfig_subdoc_type_dml:
+        return strdup("dml");
+    case webconfig_subdoc_type_wifi_config:
+        return strdup("Wifi global");
+    case webconfig_subdoc_type_associated_clients:
+        return strdup("Associated_Device_Stats");
+    default:
+        return strdup("unknown");
+    }
+}
+
+static const char *get_webconfig_decode_status_string(webconfig_error_t status)
+{
+    return (status == webconfig_error_none) ? "Success" : "Error";
+}
+
+static void publish_webconfig_decode_status(wifi_ctrl_t *ctrl, const char *raw,
+    webconfig_subdoc_type_t subdoc_type, const char *subdoc_name, webconfig_error_t decode_status)
+{
+    raw_data_t rdata;
+    cJSON *root = NULL;
+    char *payload = NULL;
+    const char *status_str = get_webconfig_decode_status_string(decode_status);
+    char *subdoc_name_local = "ChannelSelection"; // default name for channel selection subdoc
+    wifi_util_error_print(WIFI_CTRL, "%s:%d: Publishing channel selection for subdoc %s\n", __func__, __LINE__, subdoc_name);
+
+    // Special handling for channel selection subdocs
+    if (1) {
+        wifi_util_error_print(WIFI_CTRL, "%s:%d: Publishing channel selection status for subdoc %s\n", __func__, __LINE__, subdoc_name);
+        root = cJSON_CreateObject();
+        if (root == NULL) {
+            wifi_util_error_print(WIFI_CTRL, "%s:%d: Failed to create JSON for webconfig status\n", __func__, __LINE__);
+            return;
+        }
+        //SubDocRadioName is needed for channel selection status to identify the radio band
+        cJSON_AddStringToObject(root, "SubDocRadioName", subdoc_name);
+        cJSON_AddStringToObject(root, "SubDocName", subdoc_name_local);
+        cJSON_AddStringToObject(root, "Status", status_str);
+        if (decode_status != webconfig_error_none) {
+            char error_msg[64];
+            snprintf(error_msg, sizeof(error_msg), "webconfig_decode failed (%d)", decode_status);
+            cJSON_AddStringToObject(root, "ErrorDescription", error_msg);
+        }
+        const char *response_code = (decode_status == webconfig_error_none) ? "accept" : "decline";
+        cJSON_AddStringToObject(root, "ResponseCode", response_code);
+        wifi_util_dbg_print(WIFI_CTRL, "%s:%d: Added ResponseCode %s for channel selection\n", __func__, __LINE__, response_code);
+        
+        // Add only CurrentOperatingClasses from raw subdoc
+        if (raw != NULL) {
+            cJSON *raw_json = cJSON_Parse(raw);
+            if (raw_json != NULL) {
+                cJSON *current_op_classes = cJSON_GetObjectItemCaseSensitive(raw_json, "CurrentOperatingClasses");
+                if (current_op_classes != NULL) {
+                    cJSON_AddItemToObject(root, "CurrentOperatingClasses", cJSON_Duplicate(current_op_classes, 1));
+                    wifi_util_dbg_print(WIFI_CTRL, "%s:%d: Added CurrentOperatingClasses to channel selection status\n", __func__, __LINE__);
+                } else {
+                    wifi_util_dbg_print(WIFI_CTRL, "%s:%d: CurrentOperatingClasses not found in raw JSON\n", __func__, __LINE__);
+                }
+                cJSON_Delete(raw_json);
+            } else {
+                wifi_util_error_print(WIFI_CTRL, "%s:%d: Failed to parse raw JSON for channel selection\n", __func__, __LINE__);
+            }
+        } else {
+            wifi_util_dbg_print(WIFI_CTRL, "%s:%d: No raw data provided for channel selection\n", __func__, __LINE__);
+        }
+    } 
+#if 0
+    else {
+        if (raw != NULL) {
+            root = cJSON_Parse(raw);
+        }
+
+        if (root == NULL) {
+            root = cJSON_CreateObject();
+            if (root == NULL) {
+                wifi_util_error_print(WIFI_CTRL, "%s:%d: Failed to create JSON for webconfig status\n", __func__, __LINE__);
+                return;
+            }
+
+            //char *subdoc_name = get_default_subdoc_name_for_type(subdoc_type);
+            //log
+            wifi_util_dbg_print(WIFI_CTRL, "%s:%d: Using default subdoc name: %s\n", __func__, __LINE__, subdoc_name);
+            cJSON_AddStringToObject(root, "SubDocName", subdoc_name);
+            free(subdoc_name);
+            if (raw != NULL) {
+                cJSON_AddStringToObject(root, "Raw", raw);
+            }
+        }
+
+        cJSON_AddStringToObject(root, "Status", status_str);
+        if (decode_status != webconfig_error_none) {
+            char error_msg[64];
+            snprintf(error_msg, sizeof(error_msg), "webconfig_decode failed (%d)", decode_status);
+            cJSON_AddStringToObject(root, "ErrorDescription", error_msg);
+        }
+    }
+#endif
+
+    payload = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (payload == NULL) {
+        wifi_util_error_print(WIFI_CTRL, "%s:%d: Failed to serialize webconfig status JSON\n", __func__, __LINE__);
+        return;
+    }
+    // print the payload
+    wifi_util_dbg_print(WIFI_CTRL, "%s:%d: Publishing webconfig decode status: %s\n", __func__, __LINE__, payload);
+    memset(&rdata, 0, sizeof(raw_data_t));
+    rdata.data_type = bus_data_type_string;
+    rdata.raw_data.bytes = (void *)payload;
+    rdata.raw_data_len = strlen(payload) + 1;
+
+    if (get_bus_descriptor()->bus_event_publish_fn(&ctrl->handle, WIFI_WEBCONFIG_DOC_DATA_NORTH, &rdata) != bus_error_success) {
+        wifi_util_error_print(WIFI_CTRL, "%s:%d: Failed to publish webconfig decode status for subdoc %d\n", __func__, __LINE__, subdoc_type);
+    }
+
+    free(payload);
+}
+
 void process_channel_change_event(wifi_channel_change_event_t *ch_chg, bool is_nop_start_reboot, unsigned int dfs_timer_secs);
 
 void process_scan_results_event(scan_results_t *results, unsigned int len)
@@ -4496,6 +4646,7 @@ void handle_webconfig_event(wifi_ctrl_t *ctrl, const char *raw, unsigned int len
     wifi_vap_name_t vap_names[MAX_NUM_RADIOS * MAX_NUM_VAP_PER_RADIO];
     unsigned int num_ssid = 0;
     cJSON *json = NULL;
+    webconfig_error_t decode_status;
 
     data = (webconfig_subdoc_data_t *)malloc(sizeof(webconfig_subdoc_data_t));
     if (data == NULL) {
@@ -4562,7 +4713,27 @@ void handle_webconfig_event(wifi_ctrl_t *ctrl, const char *raw, unsigned int len
         }
 
         apps_mgr_analytics_event(&ctrl->apps_mgr, wifi_event_type_webconfig, subtype, NULL);
-        webconfig_decode(config, data, raw);
+        // print subdock type
+        wifi_util_error_print(WIFI_CTRL, "%s:%d: webconfig decode for subdoc type %d with data %s\n", __func__, __LINE__,
+                subdoc_type, raw);
+        decode_status = webconfig_decode(config, data, raw);
+        wifi_util_error_print(WIFI_CTRL, "%s:%d: webconfig decode status for subdoc %d is %d\n", __func__, __LINE__, subdoc_type, decode_status);
+        char *subdoc_name = get_subdoc_name_from_json(raw);
+        wifi_util_error_print(WIFI_CTRL, "%s:%d: webconfig decode for subdoc %s with data %s\n", __func__, __LINE__,
+                subdoc_name != NULL ? subdoc_name : "unknown", raw);
+        publish_webconfig_decode_status(ctrl, raw, subdoc_type, subdoc_name, decode_status);
+        if (decode_status != webconfig_error_none) {
+            char *subdoc_name = get_subdoc_name_from_json(raw);
+            if (subdoc_name == NULL) {
+                subdoc_name = get_default_subdoc_name_for_type(subdoc_type);
+            }
+            wifi_util_error_print(WIFI_CTRL, "%s:%d: webconfig_decode failed for subdoc %s (%d)\n", __func__, __LINE__, subdoc_name, decode_status);
+            free(subdoc_name);
+            webconfig_data_free(data);
+            free(data);
+            return;
+        }
+
         wifi_event = (wifi_event_t *)malloc(sizeof(wifi_event_t));
         if (wifi_event != NULL) {
             memset(wifi_event, 0, sizeof(wifi_event_t));
