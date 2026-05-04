@@ -73,6 +73,7 @@ webconfig_error_t webconfig_decode(webconfig_t *config, webconfig_subdoc_data_t 
         wifi_util_error_print(WIFI_WEBCONFIG,"%s:%d Failed to allocate memory.\n", __func__,__LINE__);
         return webconfig_error_decode;
     }
+    wifi_util_dbg_print(WIFI_WEBCONFIG, "%s:%d: Webconfig decode for subdoc with data %s\n", __func__, __LINE__, str);
 
     strcpy(data->u.encoded.raw, str);
 
@@ -82,6 +83,7 @@ webconfig_error_t webconfig_decode(webconfig_t *config, webconfig_subdoc_data_t 
 
     ret = webconfig_set(config, data);
     if (ret != webconfig_error_none) {
+        wifi_util_error_print(WIFI_WEBCONFIG, "%s:%d: Failed to set webconfig data %d\n", __func__, __LINE__, ret);
         webconfig_data_free(data);
     }
 
