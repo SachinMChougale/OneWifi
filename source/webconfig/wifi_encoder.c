@@ -60,6 +60,69 @@ webconfig_error_t encode_radio_setup_object(const rdk_wifi_vap_map_t *vap_map, c
     return webconfig_error_none;
 }
 
+extern int wifi_channel_to_freq(const char *country, unsigned char opclass,
+    unsigned int channel, unsigned int *freq);
+
+static bool is_channel_in_op_class(unsigned int op_class, int channel)
+{
+    unsigned int freq;
+
+    return (wifi_channel_to_freq(NULL, (unsigned char)op_class,
+        (unsigned int)channel, &freq) == RETURN_OK);
+}
+
+static void append_dfs_non_operable_channels(const wifi_radio_operationParam_t *oper,
+    unsigned int op_class, int *nonOperableChannel, unsigned int *numNonOperable)
+{
+    const int dfs_channels_5g[] = {
+        52, 56, 60, 64, 100, 104, 108, 112,
+        116, 120, 124, 128, 132, 136, 140, 144
+    };
+    unsigned int i, j;
+    bool already_present;
+
+    if ((oper == NULL) || (nonOperableChannel == NULL) || (numNonOperable == NULL)) {
+        return;
+    }
+
+    wifi_util_error_print(WIFI_WEBCONFIG, "%s:%d: DFS is %s\n",
+        __func__, __LINE__, oper->DfsEnabled ? "enabled" : "disabled");
+    if ((oper->DfsEnabled != false) ||
+        (oper->band != WIFI_FREQUENCY_5_BAND && oper->band != WIFI_FREQUENCY_5H_BAND &&
+         oper->band != WIFI_FREQUENCY_5L_BAND)) {
+        return;
+    }
+
+    for (i = 0; i < (sizeof(dfs_channels_5g) / sizeof(dfs_channels_5g[0])); i++) {
+        if (*numNonOperable >= MAXNUMNONOPERABLECHANNELS) {
+            break;
+        }
+
+        if (!is_channel_in_op_class(op_class, dfs_channels_5g[i])) {
+            continue;
+        }
+
+        already_present = false;
+        for (j = 0; j < *numNonOperable; j++) {
+            if (nonOperableChannel[j] == dfs_channels_5g[i]) {
+                already_present = true;
+                break;
+            }
+        }
+
+        if (!already_present) {
+            nonOperableChannel[*numNonOperable] = dfs_channels_5g[i];
+            (*numNonOperable)++;
+        }
+    }
+    // print non-operable channels for debugging
+    wifi_util_error_print(WIFI_WEBCONFIG, "%s:%d: Non-operable channels after adding DFS channels: ", __func__, __LINE__);
+    for (i = 0; i < *numNonOperable; i++) {
+        wifi_util_error_print(WIFI_WEBCONFIG, "%d ", nonOperableChannel[i]);
+    }
+    wifi_util_error_print(WIFI_WEBCONFIG, "\n");
+}
+
 webconfig_error_t encode_radio_operating_classes(const wifi_radio_operationParam_t *oper,
     cJSON *radio_object)
 {
@@ -67,6 +130,7 @@ webconfig_error_t encode_radio_operating_classes(const wifi_radio_operationParam
     unsigned int i, j;
     const wifi_operating_classes_t *oper_classes;
     int nonOperableChannel[MAXNUMNONOPERABLECHANNELS];
+    unsigned int numNonOperable;
 
     cJSON_AddNumberToObject(radio_object, "NumberOfOpClass", oper->numOperatingClasses);
 
@@ -76,14 +140,19 @@ webconfig_error_t encode_radio_operating_classes(const wifi_radio_operationParam
         oper_classes = &oper->operatingClasses[i];
         obj = cJSON_CreateObject();
         cJSON_AddItemToArray(obj_array, obj);
-        cJSON_AddNumberToObject(obj, "NumberOfNonOperChan", oper_classes->numberOfNonOperChan);
-        cJSON_AddNumberToObject(obj, "Class", oper_classes->opClass);
-        cJSON_AddNumberToObject(obj, "MaxTxPower", oper_classes->maxTxPower);
+        numNonOperable = 0;
         for (j = 0; (j < oper_classes->numberOfNonOperChan && j < MAXNUMNONOPERABLECHANNELS); j++) {
             nonOperableChannel[j] = oper_classes->nonOperable[j];
+            numNonOperable++;
         }
-        if (j != 0) {
-            cJSON_AddItemToObject(obj, "NonOperable", cJSON_CreateIntArray(nonOperableChannel, j));
+
+        append_dfs_non_operable_channels(oper, oper_classes->opClass, nonOperableChannel, &numNonOperable);
+
+        cJSON_AddNumberToObject(obj, "NumberOfNonOperChan", numNonOperable);
+        cJSON_AddNumberToObject(obj, "Class", oper_classes->opClass);
+        cJSON_AddNumberToObject(obj, "MaxTxPower", oper_classes->maxTxPower);
+        if (numNonOperable != 0) {
+            cJSON_AddItemToObject(obj, "NonOperable", cJSON_CreateIntArray(nonOperableChannel, numNonOperable));
         } else {
             cJSON_AddStringToObject(obj, "NonOperable", "[]");
         }
